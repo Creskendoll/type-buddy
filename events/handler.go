@@ -8,14 +8,28 @@ import (
 	"unicode"
 
 	"github.com/go-vgo/robotgo"
-	"github.com/ollama/ollama/api"
 	hook "github.com/robotn/gohook"
 
 	"github.com/Creskendoll/type-buddy/llm"
 	debounce "github.com/Creskendoll/type-buddy/timing"
 )
 
-func RunEventLoop(llmClient *api.Client, ctx context.Context, setPredictionText func(string), setBufferText func(string)) {
+const (
+	PredictionEventKind = "prediction"
+	CorrectionEventKind = "correction"
+	MouseClickEventKind = "mouse_click"
+	TextBufferEventKind = "text_buffer"
+)
+
+type AppEvent struct {
+	Kind    string `json:"kind"`
+	Payload string `json:"payload"`
+
+	X int16 `json:"x"`
+	Y int16 `json:"y"`
+}
+
+func RunEventLoop(llm *llm.LLMClient, ctx context.Context, appEventChannel chan AppEvent) {
 	mouseEventChannel := make(chan hook.Event)
 	keyboardEventChannel := make(chan hook.Event)
 
@@ -25,9 +39,10 @@ func RunEventLoop(llmClient *api.Client, ctx context.Context, setPredictionText 
 		defer hook.End()
 
 		for event := range eventChain {
-			if event.Kind == hook.MouseDown {
+			switch event.Kind {
+			case hook.MouseDown:
 				mouseEventChannel <- event
-			} else if event.Kind == hook.KeyDown || event.Kind == hook.KeyUp {
+			case hook.KeyDown, hook.KeyUp:
 				keyboardEventChannel <- event
 			}
 		}
@@ -40,18 +55,12 @@ func RunEventLoop(llmClient *api.Client, ctx context.Context, setPredictionText 
 		keysToAccept := []uint16{65507, 65507}
 		keysToAcceptState := slices.Clone(keysToAccept)
 
-		debounced := debounce.New(300 * time.Millisecond)
+		predictionDebounced := debounce.New(300 * time.Millisecond)
+		correctionDebounced := debounce.New(300 * time.Millisecond)
 
 		for event := range keyboardEventChannel {
-			fmt.Println(event)
-
 			if event.Kind == hook.KeyDown {
 				keychar := hook.RawcodetoKeychar(event.Rawcode)
-
-				// Reset the accept shortcut state
-				if len(keysToAcceptState) != len(keysToAccept) && !slices.Contains(keysToAccept, event.Rawcode) {
-					keysToAcceptState = slices.Clone(keysToAccept)
-				}
 
 				// Backspace
 				if event.Rawcode == 65288 && len(textBuffer) > 0 {
@@ -67,10 +76,13 @@ func RunEventLoop(llmClient *api.Client, ctx context.Context, setPredictionText 
 					textBuffer = ""
 				}
 
-				setBufferText(textBuffer)
+				appEventChannel <- AppEvent{
+					Kind:    TextBufferEventKind,
+					Payload: textBuffer,
+				}
 
-				debounced(func() {
-					newPrediction, err := llm.Predict(llmClient, ctx, textBuffer)
+				predictionDebounced(func() {
+					newPrediction, err := llm.Predict(textBuffer)
 					if err != nil {
 						fmt.Println("Error getting prediction:", err)
 						return
@@ -80,10 +92,35 @@ func RunEventLoop(llmClient *api.Client, ctx context.Context, setPredictionText 
 						return
 					}
 
-					setPredictionText(newPrediction)
+					appEventChannel <- AppEvent{
+						Kind:    PredictionEventKind,
+						Payload: newPrediction,
+					}
 					prediction = newPrediction
 				})
+
+				correctionDebounced(func() {
+					newCorrected, err := llm.Correct(textBuffer)
+					if err != nil {
+						fmt.Println("Error getting corrected text:", err)
+						return
+					}
+
+					if newCorrected == "{KO}" {
+						return
+					}
+
+					appEventChannel <- AppEvent{
+						Kind:    CorrectionEventKind,
+						Payload: newCorrected,
+					}
+				})
 			} else if event.Kind == hook.KeyUp {
+				// Reset the accept shortcut state
+				if len(keysToAcceptState) != len(keysToAccept) && !slices.Contains(keysToAccept, event.Rawcode) {
+					keysToAcceptState = slices.Clone(keysToAccept)
+				}
+
 				// If the keysToAcceptState contain the keycode, remove it from the state
 				if slices.Contains(keysToAcceptState, event.Rawcode) {
 					indexToRemove := slices.Index(keysToAcceptState, event.Rawcode)
@@ -91,7 +128,6 @@ func RunEventLoop(llmClient *api.Client, ctx context.Context, setPredictionText 
 				}
 
 				if len(keysToAcceptState) == 0 {
-					fmt.Println("Accepting prediction:", prediction)
 					robotgo.TypeStrDelay(prediction, 1000)
 					keysToAcceptState = slices.Clone(keysToAccept)
 				}
@@ -103,6 +139,11 @@ func RunEventLoop(llmClient *api.Client, ctx context.Context, setPredictionText 
 	go func() {
 		for mouseEvent := range mouseEventChannel {
 			fmt.Println(mouseEvent)
+			appEventChannel <- AppEvent{
+				Kind: MouseClickEventKind,
+				X:    mouseEvent.X,
+				Y:    mouseEvent.Y,
+			}
 		}
 	}()
 }

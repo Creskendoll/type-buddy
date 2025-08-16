@@ -23,21 +23,30 @@ func main() {
 	// Create an instance of the app structure
 	app := NewApp()
 
-	llmClient, err := llm.LLMClient(ctx)
+	llmClient, err := llm.New(ctx, "")
 	if err != nil {
 		fmt.Println("Error creating LLM client:", err)
 		os.Exit(1)
 	}
 
-	setPredictionText := func(text string) {
-		runtime.EventsEmit(app.ctx, "setPredictionText", text)
-	}
+	appEventChannel := make(chan events.AppEvent)
+	events.RunEventLoop(llmClient, ctx, appEventChannel)
 
-	setBufferText := func(text string) {
-		runtime.EventsEmit(app.ctx, "setBufferText", text)
-	}
-
-	events.RunEventLoop(llmClient, ctx, setPredictionText, setBufferText)
+	go func() {
+		for event := range appEventChannel {
+			switch event.Kind {
+			case events.PredictionEventKind:
+				runtime.EventsEmit(app.ctx, SetPredictionTextEvent, event.Payload)
+			case events.CorrectionEventKind:
+				runtime.EventsEmit(app.ctx, SetCorrectedTextEvent, event.Payload)
+			case events.TextBufferEventKind:
+				runtime.EventsEmit(app.ctx, SetBufferTextEvent, event.Payload)
+			case events.MouseClickEventKind:
+				fmt.Println("Mouse clicked at:", event.X, event.Y)
+				runtime.WindowSetPosition(app.ctx, int(event.X), int(event.Y))
+			}
+		}
+	}()
 
 	// Create application with options
 	err = wails.Run(&options.App{
