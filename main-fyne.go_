@@ -1,0 +1,42 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+
+	"github.com/Creskendoll/type-buddy/events"
+	"github.com/Creskendoll/type-buddy/llm"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
+)
+
+func main_() {
+	ctx := context.Background()
+
+	a := app.New()
+
+	w := a.NewWindow("Predictor")
+
+	predictionText := widget.NewLabel("Start typing!")
+	w.SetContent(container.NewVBox(predictionText))
+
+	llmClient, err := llm.LLMClient(ctx)
+	if err != nil {
+		fmt.Println("Error creating LLM client:", err)
+		os.Exit(1)
+	}
+
+	setPredictionText := func(text string) {
+		fyne.Do(func() {
+			predictionText.SetText(text)
+		})
+	}
+
+	events.RunEventLoop(llmClient, ctx, setPredictionText)
+
+	w.ShowAndRun()
+}

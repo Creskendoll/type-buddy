@@ -15,7 +15,7 @@ import (
 	debounce "github.com/Creskendoll/type-buddy/timing"
 )
 
-func RunEventLoop(llmClient *api.Client, ctx context.Context, setPredictionText func(string)) {
+func RunEventLoop(llmClient *api.Client, ctx context.Context, setPredictionText func(string), setBufferText func(string)) {
 	mouseEventChannel := make(chan hook.Event)
 	keyboardEventChannel := make(chan hook.Event)
 
@@ -56,17 +56,18 @@ func RunEventLoop(llmClient *api.Client, ctx context.Context, setPredictionText 
 				// Backspace
 				if event.Rawcode == 65288 && len(textBuffer) > 0 {
 					textBuffer = textBuffer[:len(textBuffer)-1]
-				}
-
-				if !unicode.IsPrint(rune(keychar[0])) && event.Rawcode != 65288 {
+				} else if unicode.IsPrint(rune(keychar[0])) {
+					textBuffer += keychar
+				} else {
+					// A modifier key was pressed, do not update the text buffer
 					continue
 				}
-
-				textBuffer += keychar
 
 				if len(textBuffer) > 100 {
 					textBuffer = ""
 				}
+
+				setBufferText(textBuffer)
 
 				debounced(func() {
 					newPrediction, err := llm.Predict(llmClient, ctx, textBuffer)
